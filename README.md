@@ -8,7 +8,7 @@ Esta plantilla debe ser personalizada para cada proyecto según las necesidades 
 
 ### Componentes configurables predefinidos
 
-En esta plantilla se asumieron algunar herramientas del proyecto que deben ser personalizados para cada proyecto:
+En esta plantilla se asumieron algunas herramientas que deben ser personalizadas para cada proyecto:
 - Digital Ocean Droplet
 - Digital Ocean Managed DB
 - Servidor Nginx
@@ -17,7 +17,7 @@ En esta plantilla se asumieron algunar herramientas del proyecto que deben ser p
 
 ## Requerimientos
 
-Para ejecutar el script se deben tener los siguiente paquetes instalados
+Para ejecutar el script se deben tener los siguiente paquetes instalados:
 - Terraform
 - Ansible
 

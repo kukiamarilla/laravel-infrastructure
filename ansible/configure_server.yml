@@ -1,0 +1,206 @@
+---
+- name: Configure Laravel Project
+  hosts: laravel_server
+  become_user: "root"
+  become: yes
+  vars:
+    domain_name: "{{ lookup('env','DOMAIN_NAME') }}"
+    project_name: "{{ lookup('env','PROJECT_NAME') }}"
+    db_host: "{{ lookup('env','DB_HOST') }}"
+    db_port: "{{ lookup('env','DB_PORT') }}"
+    db_name: "{{ lookup('env','TF_VAR_DB_DATABASE') }}"
+    db_user: "{{ lookup('env','TF_VAR_DB_USERNAME') }}"
+    db_password: "{{ lookup('env','DB_PASSWORD') }}"
+    server_username: "{{ lookup('env','SERVER_USERNAME') }}"
+    mail_host: "{{ lookup('env','MAIL_HOST') }}"
+    mail_port: "{{ lookup('env','MAIL_PORT') }}"
+    mail_username: "{{ lookup('env','MAIL_USERNAME') }}"
+    mail_password: "{{ lookup('env','MAIL_PASSWORD') }}"
+    mail_encryption: "{{ lookup('env','MAIL_ENCRYPTION') }}"
+    mail_from_address: "{{ lookup('env','MAIL_FROM_ADDRESS') }}"
+    repo_url: "{{ lookup('env','REPO_URL') }}"
+  tasks:
+
+    - name: Create a new user with sudo permissions
+      user:
+        name: "{{ server_username }}"
+        shell: /bin/bash
+        groups: sudo
+        append: yes
+    
+    - name: Check if SSH key exists
+      stat:
+        path: /root/.ssh/id_rsa
+      register: ssh_key_check
+
+    - name: Copy SSH key to server
+      copy:
+        src: ../ssh/id_rsa
+        dest: /root/.ssh/id_rsa
+        mode: '0600'
+      when: not ssh_key_check.stat.exists
+
+    - name: Use rsync to copy SSH keys and set ownership
+      command:
+        cmd: "rsync --archive --chown={{ server_username }}:{{ server_username }} ~/.ssh /home/{{ server_username }}"
+      when: server_username is defined
+    
+    - name: Grant no-password sudo privileges to new user
+      lineinfile:
+        dest: "/etc/sudoers.d/{{ server_username }}"
+        line: "{{ server_username }} ALL=(ALL) NOPASSWD:ALL"
+        create: yes
+        validate: 'visudo -cf %s'
+
+    - name: Add ondrej/php repository
+      apt_repository:
+        repo: 'ppa:ondrej/php'
+        update_cache: yes
+
+    - name: Install PHP 8.2 and necessary extensions
+      apt:
+        name:
+          - php8.2
+          - php8.2-fpm
+          - php8.2-cli
+          - php8.2-fpm
+          - php8.2-common
+          - php8.2-mysql
+          - php8.2-zip
+          - php8.2-gd
+          - php8.2-mbstring
+          - php8.2-curl
+          - php8.2-xml
+          - php8.2-bcmath
+          - git
+          - unzip
+          - supervisor
+          - nginx
+        state: present
+      become_user: root
+
+    - name: Añadir repositorio NodeSource para Node.js LTS
+      shell: "curl -sL https://deb.nodesource.com/setup_lts.x | sudo -E bash -"
+
+    - name: Instalar Node.js (LTS) y npm
+      apt:
+        pkg:
+          - nodejs
+        update_cache: yes
+
+    - name: Download Composer installer to temporary directory
+      get_url:
+        url: https://getcomposer.org/installer
+        dest: /tmp/composer-setup.php
+        mode: '0755'
+
+    - name: Run Composer installer
+      command:
+        cmd: "php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer"
+      args:
+        creates: /usr/local/bin/composer
+
+    - name: Remove Composer installer
+      file:
+        path: /tmp/composer-setup.php
+        state: absent
+
+    - name: Ensure PHP 8.2-FPM is started and enabled
+      service:
+        name: php8.2-fpm
+        state: started
+        enabled: yes
+
+    - name: Setup UFW firewall rules
+      ufw:
+        rule: allow
+        name: "{{ item }}"
+      loop:
+        - OpenSSH
+        - Nginx Full
+
+    - name: Add GitHub's SSH key to known_hosts
+      known_hosts:
+        name: github.com
+        key: "{{ lookup('pipe', 'ssh-keyscan github.com') }}"
+        state: present
+        path: "/root/.ssh/known_hosts"
+
+    - name: Verifica si ya existe el repositorio
+      stat:
+        path: /var/www/{{ domain_name }}
+      register: repo_dir
+      
+    - name: Clone Laravel project from Git
+      git:
+        repo: "{{ repo_url }}"
+        dest: /var/www/{{ domain_name }}
+      when: not repo_dir.stat.exists
+
+    - name: Asegurarse de que acl está instalado
+      apt:
+        name: acl
+        state: present
+
+    - name: Establecer permisos ACL
+      acl:
+        path: /var/www/{{ domain_name }}
+        entity: "{{ server_username}}"
+        etype: user
+        permissions: rwx
+        state: present
+        recursive: yes
+
+    - name: Setup Nginx virtual host for Laravel
+      template:
+        src: ../nginx/template.j2
+        dest: /etc/nginx/sites-available/{{ domain_name }}
+
+    - name: Restart Nginx using command module
+      command: systemctl restart nginx
+
+    - name: Install Composer dependencies
+      composer:
+        command: install
+        working_dir: /var/www/{{ domain_name }}
+      become_user: "{{server_username}}"
+
+    - name: Ejecutar npm install
+      command:
+        cmd: npm install
+        chdir: /var/www/{{ domain_name }}
+      become_user: "{{server_username}}"
+
+    - name: Copy and fill the .env file
+      template:
+        src: ../laravel/.env.j2
+        dest: /var/www/{{ domain_name }}/.env
+
+    - name: Change ownership of /var/www to new user
+      file:
+        path: /var/www/{{ domain_name }}
+        owner: "www-data"
+        group: "www-data"
+        recurse: yes
+        state: directory
+
+    - name: Enable the Nginx site
+      file:
+        src: /etc/nginx/sites-available/{{ domain_name }}
+        dest: /etc/nginx/sites-enabled/{{ domain_name }}
+        state: link
+
+    - name: Install Certbot
+      apt:
+        name:
+          - certbot
+          - python3-certbot-nginx
+        state: present
+
+    - name: Obtain a Certbot SSL certificate for Nginx
+      command: sudo certbot --nginx -d {{ domain_name }} --non-interactive --agree-tos -m {{ mail_username }}
+
+    - name: Build frontend assets (assuming you're using Vite)
+      command:
+        cmd: npm run build
+        chdir: /var/www/{{ domain_name }}
